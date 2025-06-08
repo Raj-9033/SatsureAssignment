@@ -72,6 +72,55 @@ class TestThreadSafeCache(unittest.TestCase):
         stats = self.cache.get_stats()
         self.assertLessEqual(stats['current_size'], self.cache._max_size)
 
+    def test_thread_specific_concurrent_access(self):
+        # Create a larger cache for this test
+        self.cache = ThreadSafeCache(max_size=1000, default_ttl=300)
+        
+        # Use an event to synchronize thread completion
+        completion_event = threading.Event()
+        threads_completed = 0
+        completion_lock = threading.Lock()
+        
+        def worker(thread_id):
+            nonlocal threads_completed
+            try:
+                for i in range(100):
+                    self.cache.put(f"thread_{thread_id}:item_{i}", f"data_{i}")
+                    self.cache.get(f"thread_{thread_id}:item_{i//2}")
+                    time.sleep(0.001)  # Small delay to increase chance of race conditions
+            finally:
+                with completion_lock:
+                    threads_completed += 1
+                    if threads_completed == 5:  # All threads completed
+                        completion_event.set()
+
+        # Create multiple threads with different thread IDs
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+        
+        # Start all threads
+        for thread in threads:
+            thread.start()
+        
+        # Wait for all threads to complete
+        completion_event.wait(timeout=10)  # Wait up to 10 seconds
+        
+        # Verify cache is in a consistent state
+        stats = self.cache.get_stats()
+        self.assertLessEqual(stats['current_size'], self.cache._max_size)
+        
+        # Verify that some items from each thread are still in cache
+        for thread_id in range(5):
+            found_items = 0
+            for i in range(100):
+                if self.cache.get(f"thread_{thread_id}:item_{i}") is not None:
+                    found_items += 1
+            self.assertGreater(found_items, 0, f"Thread {thread_id} items not found in cache")
+            
+        # Print cache statistics for debugging
+        print("\nCache Statistics after concurrent access:")
+        for key, value in stats.items():
+            print(f"{key}: {value}")
+
     def test_stats(self):
         # Perform some operations
         self.cache.put("key1", "value1")
